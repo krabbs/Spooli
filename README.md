@@ -1,4 +1,4 @@
-# 📄 Prusa MMU3 Filament Monitor – System Overview & Installation Guide
+# 📄 Spooli - the smart connected Prusa (MMU) Filament Monitor – System Overview & Installation Guide
 
 ![Dashboard Overview](images/dashboard.png)
 ![Spool Table](images/spool_table.png)
