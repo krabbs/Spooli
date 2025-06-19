@@ -39,6 +39,8 @@ The backend API is designed for easy integration via JSON-based GET and POST end
 - G-code compatibility checks
 
 ## 🐞 Known Bugs
+- Flow Rate change is not calculated. (very rare in gcodes since it is directly calculated in G1/GO E parameters.
+- wiping tower and filament stamping before tool change maybe not correct. values are taken from gcode meta data. real use maybe different
 - Forecasts can be delayed
 - Unexpected restarts or network failures may cause looping
 
@@ -51,10 +53,10 @@ The system consists of three main parts:
 ### 1. `app.py` – Flask Web Backend
 - Hosts the UI and APIs
 - Manages spool database
-- Controls threading and monitoring
+- Controls threading and monitoring and Gcode Analysis Loop
 
 ### 2. `monitor.py` – Live Print Analyzer
-- Downloads and parses G-code
+- Downloads and parses G-code (triggered by app.py)
 - Tracks tool changes and filament usage
 - Feeds usage data to the frontend and database
 
@@ -62,6 +64,10 @@ The system consists of three main parts:
 - Displays progress and active tools
 - Allows manual editing of spools
 - Presents history and forecasting
+
+### 4. 'settings'
+- global variables 
+- settings like prusa_usage = False which tells the loop to use prusa slicer estimates if print is successfully. Disabled because priming will not be covered
 
 ---
 
@@ -100,7 +106,56 @@ python3 app.py
 - `data/spool_db.json`
 - `data/print_history.json`
 
+## 🔁 Spool Database Example
+
 ---
+
+```json
+[
+  {
+    "id": "A1B2",
+    "name": "Prusament PLA",
+    "material": "PLA",
+    "color": "Galaxy Black",
+    "data": {
+      "remaining_g": 420.5,
+      "first_used": "2025-06-10T15:32+0200",
+      "last_used": "2025-06-18T09:41+0200"
+    },
+    "usage": {
+      "slot": 0
+    }
+  },
+  {
+    "id": "C3D4",
+    "name": "SILK Orange",
+    "material": "PLA",
+    "color": "Orange",
+    "data": {
+      "remaining_g": 900.0,
+      "first_used": "2025-06-15T12:05+0200",
+      "last_used": "2025-06-16T17:20+0200"
+    },
+    "usage": {
+      "slot": 2
+    }
+  },
+  {
+    "id": "E5F6",
+    "name": "TPU95A Flex",
+    "material": "TPU",
+    "color": "White",
+    "data": {
+      "remaining_g": 750.0,
+      "first_used": null,
+      "last_used": null
+    },
+    "usage": {
+      "slot": null
+    }
+  }
+]
+```
 
 ## 🔁 Print History Example
 
@@ -172,14 +227,33 @@ WantedBy=multi-user.target
 
 ---
 
-## 🖼 Frontend Walkthrough
+## 🖼 Frontend Explained
+![active spools](images/dashboard.png)
+Top Cards: Show active spools and live chart of filament usage (mm vs. % progress)
+Bottom shows spools and history 
 
-![Active Spools](images/dashboard.png)
-![Spool Table](images/spool_table.png)
+![active spools](images/spool_table.png)
 ![Print History](images/animationUI.gif)
-![Live Graph](images/lastPrintUI.png)
-![Spool DB](images/SpoolDatabaseUI.png)
-![History Table](images/history_table.png)
+Forecasting: /prognosis returns expected consumption to warn early if filament is insufficient
+The black line indicates the usage for 100% of the current print 
+White Red bars highlights negative spools. means there was an calculation error or another spool joined the tool. this can be manually solved with the spool database weight manipulation.
+White Red Blinking bars means the print with this specific spool will result in an end of spool BEFORE print ends.
+![active print](images/lastPrintUI.png)
+This graphic is the main output of the consumption algorithm and can be used as a live visualization or print overview 
+
+![Spool Database](images/SpoolDatabaseUI.png)
+Slot Mapping amd spool database: Maps internal slots 0–5 to frontend view 1–6 (slot 5 → "non-mmu")
+Inline Editing: Supports editing fields like remaining weight, name, color. simple +/- formulas are allowed in the weight cell.
+
+![Print History](images/history_table.png)
+Csn be expanded by clicking 
+History Table: Stores and displays past print jobs with filterable spool ID, status, file
+
+
+Warning Banner: /noti dynamically shows info banners like "no sync", "analyze offline", etc.
+
+Progress Indicators(at the very top) Frontend highlights blocked state and informs printing status. Note: if the live status calls "blocked" than the gcode is locked by prusa printer and will be available after the printing. means your consumption will be tracked after the print finished or aborted 
+
 
 ---
 
