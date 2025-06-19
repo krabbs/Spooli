@@ -85,6 +85,7 @@ cd bgcode
 make
 sudo cp bgcode /usr/local/bin
 ```
+or check your pacman or aptitude 
 
 ```bash
 export PASSWORD="your_prusa_password"
@@ -216,8 +217,8 @@ After=network.target
 [Service]
 ExecStart=/usr/bin/python3 /path/to/filament-monitor/app.py
 WorkingDirectory=/path/to/filament-monitor
-Environment=PRUSA_IP=192.168.1.48
-Environment=PASSWORD=your_password
+Environment=PRUSA_IP=printers_ip
+Environment=PASSWORD=your_password not token 
 Restart=always
 User=pi
 
