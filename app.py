@@ -351,10 +351,18 @@ def get_prognosis():
         if not settings.tool_state == "PRINTING" or settings.tool_live in ('file', 'blocked'):
             return jsonify({})
             
+        if not settings.slicing_g:
+          print("no prognosis yet. no meta data")
+          return jsonify({})
+        used_available = False
         # Letzter Stand aus usage_history: bisher verbraucht in mm pro Tool
-        last_progress, usage = usage_history[-1]
-        if last_progress == 0:
-            return jsonify({})
+        #last_progress, usage = usage_history[-1]
+        if not settings.tool_live in ('live'):
+            #return jsonify({})
+            used_available = False
+        else:
+            used_available = True
+            last_progress, usage = usage_history[-1]
 
         # slicer-Verbrauch aus Metadaten (g)
         slicing_g = settings.slicing_g  # zuvor in settings gesetzt
@@ -364,30 +372,32 @@ def get_prognosis():
             prognosis = {}
             for slot in range(len(slicing_g)):
                 total_g = slicing_g[slot] if slot < len(slicing_g) else 0.0
-                used_g = sum(
-                    mm_to_g(u, settings.densities[slot])
-                    for p, u_dict in usage_history
-                    for s, u in u_dict.items()
-                    if s == slot
-                )
-                rest_g = max(0.0, total_g - used_g)
+                if used_available:
+                  used_g = sum(
+                      mm_to_g(u, settings.densities[slot])
+                      for p, u_dict in usage_history
+                      for s, u in u_dict.items()
+                      if s == slot
+                  )
+                  rest_g = max(0.0, total_g - used_g)
                 # aktuelle Spule finden
                 for spool in spool_db:
                     if spool["usage"]["slot"] == slot:
                         actual = spool["data"]["remaining_g"]
-                        prognosis[slot] = actual - rest_g
                         prognosis[slot] = actual - (total_g) # - used_g)
         else:
             total_g = slicing_g if isinstance(slicing_g, float) else sum(slicing_g)
-            used_g = sum(mm_to_g(u, settings.densities)
-                         for _, u_dict in usage_history
-                         for u in u_dict.values())
-            rest_g = max(0.0, total_g - used_g)
+            if used_available:
+                used_g = sum(mm_to_g(u, settings.densities)
+                             for _, u_dict in usage_history
+                             for u in u_dict.values())
+                rest_g = max(0.0, total_g - used_g)
             # Spule finden
             for spool in spool_db:
                 if spool["usage"]["slot"] is not None:
                     actual = spool["data"]["remaining_g"]
-                    prognosis = { spool["usage"]["slot"]: actual - rest_g }
+                    #prognosis = { spool["usage"]["slot"]: actual - rest_g }
+                    prognosis = { spool["usage"]["slot"]: actual - total_g }
                     break
         return jsonify(prognosis)
     except Exception as e:
@@ -400,11 +410,8 @@ def main():
     global usage_history
     init_spools()
     pm = None
-    #global tool_progress
-    #global TOOLSTATE
     # Starte Webserver im Hintergrund
-    threading.Thread(target=app.run, kwargs={'host':'0.0.0.0','port':WEB_PORT}, daemon=True).start()
-    #threading.Thread(target=app.run, kwargs={'host':'0.0.0.0','port':WEB_PORT,'debug':True,'use_reloader':True}, daemon=True).start()
+    threading.Thread(target=app.run, kwargs={'host':'0.0.0.0','port':WEB_PORT}, daemon=False).start()
     print(f"Webserver läuft auf http://0.0.0.0:{WEB_PORT}")
     run_looping = True
     settings.reboot = False
@@ -434,6 +441,7 @@ def main():
             inp=sys.argv[1]; filename=os.path.basename(inp); dl=False
             settings.tool_live = 'file'
             file_analyse = False
+            #run_looping = False
         else:
             settings.noti = "" 
             job_init = init_wait_for_job()
@@ -468,14 +476,7 @@ def main():
           doSync = False
           settings.noti = "no sync"
         else:
-          doSync = True
-        
-        
-        #if dl or settings.tool_live=='blocked':
-       #   doSync = True
-     #   else:
-      #    doSync = False
-          
+          doSync = True      
           
         gen = live_analyze_gen(gcode_path, slicing_m, densities, stamping, sync=doSync)
         for progress, usage in gen:
