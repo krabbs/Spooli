@@ -1,8 +1,8 @@
 from requests.auth import HTTPDigestAuth
-
+from datetime import datetime
 def init(pw, ip):
     global tool_progress, tool_state, tool_job, tool_live, tool_mmu, tool_count,tool_count_mmu, USERNAME, PASSWORD, PRUSA_IP, API_URL, FILES_URL, AUTH, prusa_usage, noti, densities, slicing_g,reboot, reboot_analzye
-    print("SETTINGS INIT")
+    print(f"[INIT {datetime.now().strftime('%H:%M:%S')} ] SETTINGS INIT")
     tool_progress = None
     tool_state = "unknown"   # PRINTING, PAUSED, etc.
     tool_job = None # file

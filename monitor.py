@@ -122,6 +122,8 @@ def ProgressMonitor_thread_fn():
                 if tool_progress_old != settings.tool_progress:
                   print(f"PRINTER PROGRESS WATCH: {settings.tool_progress:.1f}%. State: {settings.tool_state}. File {settings.tool_job}")
                   tool_progress_old = settings.tool_progress
+        else:
+        	settings.tool_job = None
         time.sleep(POLL_INTERVAL)
 
 def download_thread_fn(filename, dest):

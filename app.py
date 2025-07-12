@@ -29,6 +29,7 @@ def save_spool_db(db):
         json.dump(db, f, indent=2)
 
 INITIAL_WEIGHT_G = 1000.0  # 1 kg pro Spule
+TARE_WEIGHT_G = 200
 
 #GLOBALS
 spool_db = []
@@ -61,7 +62,7 @@ def init_spools():
               "name": f"Spule {i}",
               "material": "PLA",
               "color": "Weiß",
-              "data": { "remaining_g": INITIAL_WEIGHT_G, "first_used": None, "last_used": None },
+              "data": { "remaining_g": INITIAL_WEIGHT_G, "tare_weight_g": TARE_WEIGHT_G, "first_used": None, "last_used": None },
               "usage": { "slot": i }  # Werkzeug‑Slot direkt zuweisen
             }
             for i in range(settings.tool_count)
@@ -69,60 +70,53 @@ def init_spools():
 
         save_spool_db(spool_db)
 
-   
+    
 def refill_spools(usage_history, densities):
     """
     Aktualisiert die Mini‑DB (spool_db) für alle Spulen basierend auf dem zuletzt
     erfassten Druckverbrauch.
-    
-    Args:
-      usage_history (list of tuple): Liste der Zwischenergebnisse 
-          [(progress_percent, {tool_index: used_mm, ...}), ...]
-      densities (list of float): Dichte (g/cm³) je Toolindex
-      
-    Returns:
-      list of dict: Aktualisierte spool_db-Liste
     """
-    global spool_db  # Deine zentrale „Datenbank“-Liste aus load_spool_db()
+    global spool_db
     
-    # 1) Falls kein Druck gelaufen ist, nichts tun
+    print("\n[refill_spools] Starte Aktualisierung der Spulen")
+    
     if not usage_history:
+        print("[refill_spools] Keine usage_history – Abbruch")
         return spool_db
 
-    # 2) Nimm nur das letzte Element (100% oder Abbruch)  
-    #    (progress, usage_dict)  
     progress, last_usage = usage_history[-1]
+    print(f"[refill_spools] Letzter Fortschritt: {progress}%")
+    print(f"[refill_spools] Letzte Verwendung (mm): {last_usage}")
     
-    # 3) Erzeuge aktuellen Zeitstempel (UTC ISO)
     now = datetime.now(ZoneInfo("Europe/Berlin"))
 
-    # 4) Für jede Spule in spool_db:
     for entry in spool_db:
-        slot = entry['usage']['slot']  # Werkzeug‑Slot (0–4) oder None
-
-        # Nur, wenn diese Spule aktuell belegt war
+        slot = entry['usage']['slot']
         if slot is None:
+            print(f"[refill_spools] Spule {entry['id']} hat keinen Slot – übersprungen")
             continue
 
-        # 5) Berechne Verbrauch in Gramm:
         used_mm = last_usage.get(slot, 0.0)
-        if used_mm < 1: continue 
-        # mm → g: Volumen = Π·r²·mm /1000, dann · density
-        if settings.tool_mmu:
-          used_g = mm_to_g(used_mm, densities[slot])
-        else:
-          used_g = mm_to_g(used_mm, densities)
-        # 6) Ziehe ab und aktualisiere remaining_g
+        if used_mm < 1:
+            print(f"[refill_spools] Slot {slot} hat nur {used_mm}mm – ignoriert")
+            continue
+
+        used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
         old = entry['data']['remaining_g']
-        entry['data']['remaining_g'] = max(0.0, old - used_g)
-        
-        # 7) Pflege first_used / last_used
+        new_value = max(0.0, old - used_g)
+
+        print(f"[refill_spools] Spule {entry['id']} – Slot {slot}")
+        print(f"    Verbrauch: {used_mm} mm → {used_g:.2f} g")
+        print(f"    Vorher: {old:.2f} g → Nachher: {new_value:.2f} g")
+
+        entry['data']['remaining_g'] = new_value
+
         if entry['data']['first_used'] is None:
             entry['data']['first_used'] = now.strftime('%Y-%m-%dT%H:%M%z')
         entry['data']['last_used'] = now.strftime('%Y-%m-%dT%H:%M%z')
 
-    # 8) Speichere die geänderte DB
     save_spool_db(spool_db)
+    print("[refill_spools] Speicherung abgeschlossen")
     return spool_db
     
 def log_print_history(filename, usage, densities, slotmap):
@@ -131,24 +125,35 @@ def log_print_history(filename, usage, densities, slotmap):
         "timestamp": now.strftime('%Y-%m-%dT%H:%M%z'),
         "file": filename,
         "progress": settings.tool_progress,
-        "status": settings.tool_state,  # <- neuer Eintrag für Druckstatus
+        "status": settings.tool_state,
         "spools": {}
     }
 
+    print(f"\n[log_print_history] Datei: {filename}")
+    print(f"[log_print_history] Status: {settings.tool_state}, Fortschritt: {settings.tool_progress}%")
+    print(f"[log_print_history] Usage (mm): {usage}")
+
     for slot, used_mm in usage.items():
-        used_g = mm_to_g(used_mm, densities[slot]) if isinstance(densities, list) else mm_to_g(used_mm, densities)
+        used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
+        print(f"[log_print_history] Slot {slot} → {used_mm} mm = {used_g:.2f} g")
+
         for spool in spool_db:
             if spool["usage"]["slot"] == slot:
                 record["spools"][spool["id"]] = round(used_g, 2)
+                print(f"  → zugewiesen an Spule {spool['id']}")
+
     try:
         with open('data/print_history.json', 'r') as f:
             data = json.load(f)
+        print("[log_print_history] Bestehende Historie geladen")
     except FileNotFoundError:
         data = []
+        print("[log_print_history] Keine bestehende Historie – neue Datei wird erstellt")
+
     data.append(record)
     with open('data/print_history.json', 'w') as f:
         json.dump(data, f, indent=2)
-
+    print(f"[log_print_history] Historie aktualisiert\n")
 
 @app.route("/spools")
 def get_spool_list():
@@ -255,11 +260,7 @@ def add_spool():
         "name": "Neue Spule",
         "material": "PLA",
         "color": "#cccccc",
-        "data": { 
-            "remaining_g": INITIAL_WEIGHT_G, 
-            "first_used": None, 
-            "last_used": None 
-        },
+        "data": { "remaining_g": INITIAL_WEIGHT_G, "tare_weight_g": TARE_WEIGHT_G, "first_used": None, "last_used": None },
         "usage": { "slot": None }
     }
     spool_db.append(new_spool)
@@ -283,6 +284,11 @@ def update_spool():
     elif field == 'remaining_g':
         try:
             target_spool['data']['remaining_g'] = float(value)
+        except ValueError:
+            return "Ungültiger Wert für Gewicht", 400
+    elif field == 'tare_weight_g':
+        try:
+            target_spool['data']['tare_weight_g'] = float(value)
         except ValueError:
             return "Ungültiger Wert für Gewicht", 400
     elif field == 'slot':
@@ -346,66 +352,66 @@ def get_notification():
 @app.route('/prognosis')
 def get_prognosis():
     try:
-        #if not usage_history or not settings.tool_state == "PRINTING" or settings.tool_live in ('file', 'blocked'):
-        #    return jsonify({})
+        # Prognose nur bei aktivem Druck sinnvoll
         if not settings.tool_state == "PRINTING" or settings.tool_live in ('file', 'blocked'):
             return jsonify({})
-            
+
         if not settings.slicing_g:
-          print("no prognosis yet. no meta data")
-          return jsonify({})
-        used_available = False
-        # Letzter Stand aus usage_history: bisher verbraucht in mm pro Tool
-        #last_progress, usage = usage_history[-1]
-        if not settings.tool_live in ('live'):
-            #return jsonify({})
-            used_available = False
-        else:
-            used_available = True
+            print("⚠️  Keine Prognose möglich – keine Slicer-Metadaten gefunden.")
+            return jsonify({})
+
+        # Prüfen, ob Live-Daten verfügbar sind
+        used_available = settings.tool_live == 'live'
+        if used_available and usage_history:
             last_progress, usage = usage_history[-1]
 
-        # slicer-Verbrauch aus Metadaten (g)
-        slicing_g = settings.slicing_g  # zuvor in settings gesetzt
+        slicing_g = settings.slicing_g  # Verbrauch laut Slicer (g)
 
-        # bisher verbraucht
+        prognosis = {}
+
         if settings.tool_mmu:
-            prognosis = {}
+            # MMU-Fall: Prognose pro Slot (0–4)
             for slot in range(len(slicing_g)):
                 total_g = slicing_g[slot] if slot < len(slicing_g) else 0.0
+                # Verbrauch bisher berechnen
                 if used_available:
-                  used_g = sum(
-                      mm_to_g(u, settings.densities[slot])
-                      for p, u_dict in usage_history
-                      for s, u in u_dict.items()
-                      if s == slot
-                  )
-                  rest_g = max(0.0, total_g - used_g)
-                # aktuelle Spule finden
+                    used_g = sum(
+                        mm_to_g(u, settings.densities[slot])
+                        for p, u_dict in usage_history
+                        for s, u in u_dict.items()
+                        if s == slot
+                    )
+                    rest_g = max(0.0, total_g - used_g)
+
+                # Prognose berechnen für belegte Spule an diesem Slot
                 for spool in spool_db:
                     if spool["usage"]["slot"] == slot:
                         actual = spool["data"]["remaining_g"]
-                        prognosis[slot] = actual - (total_g) # - used_g)
+                        # Prognose = aktueller Rest - geplanter Gesamtverbrauch
+                        prognosis[slot] = actual - total_g
         else:
+            # Kein MMU: nur ein Werkzeug aktiv → Slot 5 ("non-mmu" im Frontend)
             total_g = slicing_g if isinstance(slicing_g, float) else sum(slicing_g)
+
+            # optional: bisher verbraucht (nicht zwingend verwendet)
             if used_available:
                 used_g = sum(mm_to_g(u, settings.densities)
                              for _, u_dict in usage_history
                              for u in u_dict.values())
                 rest_g = max(0.0, total_g - used_g)
-            # Spule finden
-            for spool in spool_db:
-                if spool["usage"]["slot"] is not None:
-                    actual = spool["data"]["remaining_g"]
-                    #prognosis = { spool["usage"]["slot"]: actual - rest_g }
-                    prognosis = { spool["usage"]["slot"]: actual - total_g }
-                    break
+
+            # Spule mit Slot 5 suchen (non-mmu)
+            non_mmu_spool = next((s for s in spool_db if s["usage"]["slot"] == 5), None)
+            if non_mmu_spool:
+                actual = non_mmu_spool["data"]["remaining_g"]
+                prognosis[5] = actual - total_g
+
         return jsonify(prognosis)
+
     except Exception as e:
-        print("Fehler in /prognosis:", e)
+        print("❌ Fehler in /prognosis:", e)
         return jsonify({})
-
-
-#stop_event = threading.Event()
+        
 def main():
     global usage_history
     init_spools()
@@ -494,31 +500,48 @@ def main():
             if settings.reboot or settings.reboot_analzye:
                 print(f"settings.reboot {settings.reboot} settings.reboot_analzye {settings.reboot_analzye} erkannt, beende Live-Analyse!")
                 gen.close()   # wirft GeneratorExit INSIDE dem Generator
-                break              
+                break
         if settings.noti=="Analyse Offline" or settings.noti=="Analyse Online": settings.noti=""
         print("LIVE END")
         print("\nDruck beendet. Vergleich:")
-        if settings.tool_mmu:
-          tool_range = range(settings.tool_count_mmu)
-          for t in range(settings.tool_count_mmu):
-            calc_g=mm_to_g(usage.get(t,0.0),settings.densities[t]); sl_g=settings.slicing_g[t] if t<len(settings.slicing_g) else 0.0
-            print(f" T{t}: berechnet {calc_g:.1f}g vs slicer {sl_g:.1f}g diff {calc_g-sl_g:+.1f}g")
-            calc_m=usage.get(t,0.0); sl_m=slicing_m[t] #if t<len(slicing_m) else 0.0
-            print(f" T{t}: berechnet {calc_m:.1f}mm vs slicer {sl_m:.1f}mm diff {calc_m-sl_m:+.1f}mm")
-        else:
-            calc_g=mm_to_g((list(usage.values())[-1]),settings.densities); sl_g=settings.slicing_g if t<len(settings.slicing_g) else 0.0
-            print(f" T{settings.tool_count}: berechnet {calc_g:.1f}g vs slicer {sl_g:.1f}g diff {calc_g-sl_g:+.1f}g")
-            calc_m=(list(usage.values())[-1]); sl_m=slicing_m #if t<len(slicing_m) else 0.0
-            print(f" T{settings.tool_count}: berechnet {calc_m:.1f}mm vs slicer {sl_m:.1f}mm diff {calc_m-sl_m:+.1f}mm")
-
+        try:
+            if settings.tool_mmu:
+              tool_range = range(settings.tool_count_mmu)
+              for t in range(settings.tool_count_mmu):
+                calc_g=mm_to_g(usage.get(t,0.0),settings.densities[t]); sl_g=settings.slicing_g[t] if t<len(settings.slicing_g) else 0.0
+                print(f" T{t}: berechnet {calc_g:.1f}g vs slicer {sl_g:.1f}g diff {calc_g-sl_g:+.1f}g")
+                calc_m=usage.get(t,0.0); sl_m=slicing_m[t] #if t<len(slicing_m) else 0.0
+                print(f" T{t}: berechnet {calc_m:.1f}mm vs slicer {sl_m:.1f}mm diff {calc_m-sl_m:+.1f}mm")
+            else:
+                calc_g=mm_to_g((list(usage.values())[-1]),settings.densities); sl_g=settings.slicing_g
+                print(f" T{settings.tool_count}: berechnet {calc_g:.1f}g vs slicer {sl_g:.1f}g diff {calc_g-sl_g:+.1f}g")
+                calc_m=(list(usage.values())[-1]); sl_m=slicing_m
+                print(f" T{settings.tool_count}: berechnet {calc_m:.1f}mm vs slicer {sl_m:.1f}mm diff {calc_m-sl_m:+.1f}mm")
+        except Exception as e:
+                print("❌ error in Main final:", e)    
         
-        if ((settings.tool_state in ('FINISHED')) or (progress >= 100) or (not  doSync)) and settings.prusa_usage: # Extrude purge line is not included in Prusa Slicer Concumptions. Dont use this for the moment 
-          print(f"Printer is {progress} and marked as {settings.tool_state}. Not synchronise anymore")  
-          usage_history = add_slicer_to_usage(usage_history, slicing_m, densities)
-          print(f"finally add slicer values {usage_history}") 
+        #if ((settings.tool_state in ('FINISHED')) or (progress >= 100) or (not  doSync)) and settings.prusa_usage: # Extrude purge line is not included in Prusa Slicer Concumptions. Dont use this for the moment 
+        #  print(f"Printer is {progress} and marked as {settings.tool_state}. Not synchronise anymore")  
+        #  usage_history = add_slicer_to_usage(usage_history, slicing_m, densities)
+        #  print(f"finally add slicer values {usage_history}")
+        old_job_progressed = settings.tool_job
+        print(f"[main {datetime.now().strftime('%H:%M:%S')} ] DO REFILL")
         refill_spools(usage_history, settings.densities)
+        print(f"[main {datetime.now().strftime('%H:%M:%S')} ]  DO LOGS")
         log_print_history(filename, usage, settings.densities, [s["usage"]["slot"] for s in spool_db])
+        usage_history = []
+        print(f"[main {datetime.now().strftime('%H:%M:%S')} ]  usage_history geleert")
+        settings.noti = "CleanUp"
+        print(f"[main {datetime.now().strftime('%H:%M:%S')} ] CLEAN UP")
+        if settings.tool_job is not None or old_job_progressed == settings.tool_job:
+          print(f"[main {datetime.now().strftime('%H:%M:%S')} ] WAIT MORE TO CLEAN UP")
+          time.sleep(10)
+        if settings.tool_job is not None or old_job_progressed == settings.tool_job:
+          print(f"[main {datetime.now().strftime('%H:%M:%S')} ] WAIT EVEN MORE TO CLEAN UP")
+          time.sleep(25)
         settings.noti = ""
+        print(f"[main {datetime.now().strftime('%H:%M:%S')} ] Resume Monitoring. Old Job: {old_job_progressed}. New Job: {settings.tool_job}")
+        
 
     # Cleanup
     stop_event.set()
