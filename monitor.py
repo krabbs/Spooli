@@ -63,30 +63,6 @@ def get_current_job():
     except requests.RequestException:
         return None
 
-# ----- Progress-Monitor-Thread -----
-
-#class ProgressMonitor(threading.Thread):
-#    """Thread überwacht Druckerzustand und Fortschritt."""
-#    def __init__(self):
- #       super().__init__(daemon=True)
-#
-#    def run(self):
-#        global tool_progress, settings.tool_state
-##        while not stop_event.is_set():
-#            status = get_current_status()
-#            if status and 'printer' in status:
-#                state = status['printer'].get('state')
-#                settings.tool_state = state
- #           job = get_current_job()
- #           if job and 'progress' in job:
-#                comp = job.get('progress')#.get('completion')
-#                if comp is not None:
- #                   tool_progress = comp
- #                   print(f"Fortschritt api: {tool_progress:.1f}%. State: {status}")
- #           time.sleep(POLL_INTERVAL)
-
-
-
 # ----- Download-Thread -----
 
 def ProgressMonitor_thread_fn():

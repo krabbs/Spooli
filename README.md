@@ -28,10 +28,10 @@ The backend API is designed for easy integration via JSON-based GET and POST end
 - Remaining spool weight deduction with historical log
 - Forecasting logic to detect insufficient filament early
 - Filterable print history with spool consumption breakdown
+- Dynamic reassignment of spools during print (Experimental)
 
 ## 🚧 Planned / Missing
 - Better logging support for system
-- Dynamic reassignment of spools during print
 - Merging of spools post-print
 - MQTT integration
 - Prusa Connect API integration (waiting for API docs)
@@ -63,6 +63,7 @@ The system consists of three main parts:
 ### 3. `index.html` – Frontend UI
 - Displays progress and active tools
 - Allows manual editing of spools
+- Remapping of Spools
 - Presents history and forecasting
 
 ### 4. 'settings'
@@ -85,11 +86,11 @@ cd bgcode
 make
 sudo cp bgcode /usr/local/bin
 ```
-or check your pacman or aptitude 
+or check your pacman or aptitude install bgcode
 
 ```bash
 export PASSWORD="your_prusa_password"
-export PRUSA_IP="192.168.1.48"
+export PRUSA_IP="192.168.1.XXX"
 ```
 
 ---
@@ -122,6 +123,7 @@ python3 app.py
       "remaining_g": 420.5,
       "first_used": "2025-06-10T15:32+0200",
       "last_used": "2025-06-18T09:41+0200"
+      "tare_weight_g": 200.0
     },
     "usage": {
       "slot": 0
@@ -136,6 +138,7 @@ python3 app.py
       "remaining_g": 900.0,
       "first_used": "2025-06-15T12:05+0200",
       "last_used": "2025-06-16T17:20+0200"
+      "tare_weight_g": 200.0
     },
     "usage": {
       "slot": 2
@@ -150,6 +153,7 @@ python3 app.py
       "remaining_g": 750.0,
       "first_used": null,
       "last_used": null
+      "tare_weight_g": 200.0
     },
     "usage": {
       "slot": null
@@ -194,6 +198,8 @@ python3 app.py
 | `/history_by_spool/<id>`     | GET    | History by spool |
 | `/noti`                      | GET    | Notification |
 | `/prognosis`                 | GET    | Forecast remaining weight |
+| `/slot_override`                 | GET    | Get Spool remapping |
+| `/slot_override`                 | POST    | Set Spool remapping |
 
 ### 🔧 POST Request Examples
 

@@ -72,30 +72,37 @@ header {
   font-size: 1.5rem;  
   font-weight: 600;  
 }  
-.container {  
-  flex: 1;  
-  display: flex;  
-  flex-direction: column;  
-  overflow: hidden;  
-}  
-.top {  
-  display: flex;  
-  flex: 1 0 auto;  
-  flex-wrap: wrap;  
-  gap: 1rem;  
-  padding: 1rem;  
-  max-height: 50vh;  
-  overflow: auto;  
-}  
-.card {  
-  border-radius: 8px;  
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);  
-  padding: 1rem;  
-  position: relative;  
-  overflow: auto;  
-  flex: 1;  
-  min-width: 300px;  
-}  
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex-grow: 1;
+  overflow-y: auto; /* ✅ erlaubt vertikales Scrollen */
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  background-color: inherit;
+  padding: 1rem;
+  align-items: flex-start;
+}
+
+
+
+.card {
+  flex: 1 1 45%;  /* nicht wachsen, nicht schrumpfen */
+  min-width: 300px;
+  width: 100%;  /* nutzt die gesamte Breite */
+  max-width: 100%;  /* verhindert zu große Ausdehnung 
+  overflow: visible;  /* wichtig, sonst kann das Chart abgeschnitten werden */
+  background: inherit;
+  border: 1px solid rgba(0,0,0,0.1);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+}
+
+ 
 h2 {  
   margin-top: 0;  
   color: var(--prusa-orange);  
@@ -155,9 +162,13 @@ red 4px,
 }
 
 #all-spools {
-padding: 0.5rem 1rem 1rem;
-overflow-x: auto;
+  padding: 0.5rem 1rem 1rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 25vh; /* mindestens 25 % der Höhe */
+  max-height: 50vh; /* oder begrenzt auf max 40 % */
 }
+
 #all-spools table {
 width: 100%;
 min-width: 600px;
@@ -173,9 +184,13 @@ background: #eee;
 }
 
 #history {
-padding: 0.5rem 1rem 1rem;
-overflow-x: auto;
+  padding: 0.5rem 1rem 1rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 20vh;     /* mindestens 20 % der Höhe */
+  max-height: 35vh;     /* maximal 35 % der Höhe */
 }
+
 #history table {
 width: 100%;
 min-width: 600px;
@@ -203,6 +218,11 @@ order: -1;
 }
 #status-bar div {
 font-size: 0.9rem;
+}
+
+#liveChart {
+  width: 100%;
+  height: 300px;  /* oder 200px, je nach gewünschter Größe */
 }
 
 .button-bar {
@@ -334,7 +354,7 @@ animation: blink-red 1s infinite;
       <div class="loading-indicator" id="spool-loading"></div>  
         <h2>Active Spools Weight</h2>  
         <ul id="spool-list"></ul>  
-      </div>  
+      </div> 
       <div id="chart-card" class="card">  
         <h2>actual or last print</h2>  
         <canvas id="liveChart"></canvas>  
@@ -356,6 +376,17 @@ animation: blink-red 1s infinite;
     <tbody id="db-list"></tbody>  
   </table>  
 </section>  
+
+      <div id="override-info" style="padding: 0.5rem; font-size: 0.9rem; display: none;">
+  🔁 Temporary Slot-Mapping aktiv: <span id="override-desc"></span>
+</div>
+<div style="margin: 0.5rem 1rem;">
+  <label>Temporary Mapping: 
+    <input id="override-input" placeholder="T1 - S3,T2 - S5">
+    <button onclick="submitOverride()">✅ Set</button>
+	    <button onclick="clearOverride()">❌ Delete</button>
+  </label>
+</div>
 
 <section id="history">  
   <h2 style="cursor:pointer" onclick="toggleHistory()">📜 Print History <span id="toggle-arrow">▼</span></h2>  
@@ -396,6 +427,23 @@ animation: blink-red 1s infinite;
   
 async function updateData() {  
   if (activeEditElement || activeDropdown) return;  
+  
+  const overrideInfo = document.getElementById('override-info');
+const overrideSpan = document.getElementById('override-desc');
+
+fetch('/slot_override')
+  .then(r => r.json())
+  .then(mapping => {
+    if (Object.keys(mapping).length > 0) {
+      overrideInfo.style.display = 'block';
+      overrideSpan.textContent = Object.entries(mapping)
+  .map(([a,b]) => `T${+a + 1}-${b == 5 ? 'non-mmu' : 'S' + (+b + 1)}`)
+  .join(', ');
+    } else {
+      overrideInfo.style.display = 'none';
+    }
+  });
+  
   
   const [status, prognosis, data, weights, db_spools] = await Promise.all([  
     fetch('/status').then(r => r.json()),  
@@ -517,6 +565,53 @@ for (let t = 0; t <= 5; t++) {
   loadHistory();  
 }  
   
+  function submitOverride() {
+  const input = document.getElementById('override-input').value.trim();
+  const pairs = input.split(',');
+  const mapping = {};
+
+  for (const pair of pairs) {
+    const [left, right] = pair.split(/[:-]/).map(s => s.trim().toUpperCase());
+    let tool = null, slot = null;
+
+    // Links: Tool-Erkennung
+    if (left.startsWith('T')) {
+      tool = parseInt(left.slice(1)) - 1;
+    } else {
+      tool = parseInt(left) - 1;
+    }
+
+    // Rechts: Slot-Erkennung
+    if (right === 'NON-MMU') {
+      slot = 5;
+    } else if (right.startsWith('S')) {
+      slot = parseInt(right.slice(1)) - 1;
+    } else {
+      slot = parseInt(right) - 1;
+    }
+
+    if (!isNaN(tool) && !isNaN(slot) && tool >= 0 && tool <= 4 && slot >= 0 && slot <= 5) {
+      mapping[tool] = slot;
+    }
+  }
+
+  fetch('/slot_override', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapping)
+  }).then(() => {
+    document.getElementById('override-input').value = '';
+    updateData();
+  });
+}
+
+function clearOverride() {
+  fetch('/slot_override', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  }).then(() => updateData());
+}
     function handleSlotChange(selectElem, spoolId) {  
       const newSlot = selectElem.value;  
       fetch(`/update_spool`, {  

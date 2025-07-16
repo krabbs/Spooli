@@ -28,7 +28,7 @@ def save_spool_db(db):
     with open(SPOOL_DB_FILE, 'w') as f:
         json.dump(db, f, indent=2)
 
-INITIAL_WEIGHT_G = 1000.0  # 1 kg pro Spule
+INITIAL_WEIGHT_G = 1000.0  # kg pro Spule
 TARE_WEIGHT_G = 200
 
 #GLOBALS
@@ -41,7 +41,8 @@ stamping =  ""
 usage_history = []  # runtime data populated by monitor
 #tool_progress = 0.0
 #TOOLSTATE = "unknown"   # PRINTING, PAUSED, etc.
-
+# Temporäres Mapping: z.B. {0: 2, 1: 0} bedeutet Tool0 → Slot2, Tool1 → Slot0
+temporary_slot_map = {}
 POLL_INTERVAL = 5    # Sekunden
 
 
@@ -101,9 +102,18 @@ def refill_spools(usage_history, densities):
             print(f"[refill_spools] Slot {slot} hat nur {used_mm}mm – ignoriert")
             continue
 
-        used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
+        #used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
+        try:
+            density = densities[slot] if isinstance(densities, list) else densities
+        except IndexError:
+            print(f"⚠️ Dichte für Slot {slot} nicht gefunden – nehme Standardwert 1.24g/cm³")
+            density = 1.24
+
+        used_g = mm_to_g(used_mm, density)
+
         old = entry['data']['remaining_g']
-        new_value = max(0.0, old - used_g)
+        #new_value = max(0.0, old - used_g) #avoid negative. not used because useful for spool join
+        new_value = old - used_g
 
         print(f"[refill_spools] Spule {entry['id']} – Slot {slot}")
         print(f"    Verbrauch: {used_mm} mm → {used_g:.2f} g")
@@ -134,7 +144,18 @@ def log_print_history(filename, usage, densities, slotmap):
     print(f"[log_print_history] Usage (mm): {usage}")
 
     for slot, used_mm in usage.items():
-        used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
+        if used_mm == 0.0:
+            print(f"[log_print_history] Slot {slot} wurde nicht verwendet – übersprungen")
+            continue
+        #used_g = mm_to_g(used_mm, densities[slot] if isinstance(densities, list) else densities)
+        try:
+            density = densities[slot] if isinstance(densities, list) else densities
+        except IndexError:
+            print(f"⚠️ Dichte für Slot {slot} nicht gefunden – nehme Standardwert 1.24g/cm³")
+            density = 1.24
+
+        used_g = mm_to_g(used_mm, density)
+
         print(f"[log_print_history] Slot {slot} → {used_mm} mm = {used_g:.2f} g")
 
         for spool in spool_db:
@@ -162,16 +183,6 @@ def get_spool_list():
 @app.route("/spool_weights")
 def get_spool_weights():
     return jsonify({ s["usage"]["slot"]: s["data"]["remaining_g"] for s in spool_db if s["usage"]["slot"] is not None })
-
-#@app.route('/poll')
-#def poll():
-#    # Beispiel: Werte aus deinem Tool-Status-Tracking
-#    return jsonify({
-#        'state': tool_state,
-#        'progress': tool_progress,
-#        'job': tool_job
- #   })
-
 
 @app.route('/status')
 def status():
@@ -352,55 +363,58 @@ def get_notification():
 @app.route('/prognosis')
 def get_prognosis():
     try:
-        # Prognose nur bei aktivem Druck sinnvoll
-        if not settings.tool_state == "PRINTING" or settings.tool_live in ('file', 'blocked'):
+        if not settings.tool_state in ("PRINTING", "PAUSED") or settings.tool_live in ('file', 'blocked'):
             return jsonify({})
 
         if not settings.slicing_g:
             print("⚠️  Keine Prognose möglich – keine Slicer-Metadaten gefunden.")
             return jsonify({})
 
-        # Prüfen, ob Live-Daten verfügbar sind
+        # Step 1: Override-Mapping vorbereiten
+        slot_map = temporary_slot_map
         used_available = settings.tool_live == 'live'
-        if used_available and usage_history:
-            last_progress, usage = usage_history[-1]
 
-        slicing_g = settings.slicing_g  # Verbrauch laut Slicer (g)
+        # Step 2: usage_history remappen
+        remapped_history = [
+            (progress, apply_slot_override(usage_dict))
+            for progress, usage_dict in usage_history
+        ]
+
+        # Step 3: slicing_g und densities remappen
+        slicing_g = remap_metadata_list(settings.slicing_g, slot_map)
+        densities = remap_metadata_list(settings.densities, slot_map)
 
         prognosis = {}
 
         if settings.tool_mmu:
-            # MMU-Fall: Prognose pro Slot (0–4)
             for slot in range(len(slicing_g)):
                 total_g = slicing_g[slot] if slot < len(slicing_g) else 0.0
-                # Verbrauch bisher berechnen
+
                 if used_available:
                     used_g = sum(
-                        mm_to_g(u, settings.densities[slot])
-                        for p, u_dict in usage_history
+                        mm_to_g(u, densities[slot])
+                        for _, u_dict in remapped_history
                         for s, u in u_dict.items()
                         if s == slot
                     )
                     rest_g = max(0.0, total_g - used_g)
 
-                # Prognose berechnen für belegte Spule an diesem Slot
                 for spool in spool_db:
                     if spool["usage"]["slot"] == slot:
                         actual = spool["data"]["remaining_g"]
-                        # Prognose = aktueller Rest - geplanter Gesamtverbrauch
                         prognosis[slot] = actual - total_g
         else:
-            # Kein MMU: nur ein Werkzeug aktiv → Slot 5 ("non-mmu" im Frontend)
+            # non-MMU Fall → Slot 5
             total_g = slicing_g if isinstance(slicing_g, float) else sum(slicing_g)
 
-            # optional: bisher verbraucht (nicht zwingend verwendet)
             if used_available:
-                used_g = sum(mm_to_g(u, settings.densities)
-                             for _, u_dict in usage_history
-                             for u in u_dict.values())
+                used_g = sum(
+                    mm_to_g(u, densities)
+                    for _, u_dict in remapped_history
+                    for u in u_dict.values()
+                )
                 rest_g = max(0.0, total_g - used_g)
 
-            # Spule mit Slot 5 suchen (non-mmu)
             non_mmu_spool = next((s for s in spool_db if s["usage"]["slot"] == 5), None)
             if non_mmu_spool:
                 actual = non_mmu_spool["data"]["remaining_g"]
@@ -412,6 +426,105 @@ def get_prognosis():
         print("❌ Fehler in /prognosis:", e)
         return jsonify({})
         
+@app.route('/slot_override')
+def get_slot_override():
+    return jsonify(temporary_slot_map)
+
+@app.route('/slot_override', methods=['POST'])
+def set_slot_override():
+    global temporary_slot_map
+    try:
+        data = request.get_json()
+        # Umwandlung sicherstellen: Schlüssel und Werte als int
+        temporary_slot_map = {int(k): int(v) for k, v in data.items()}
+        print(f"[Override] Temporäres Mapping gesetzt: {temporary_slot_map}")
+        return jsonify(success=True)
+    except Exception as e:
+        print(f"❌ Fehler beim Setzen des Slot-Overrides: {e}")
+        return jsonify(success=False), 400
+
+def remap_metadata_list(meta_list, slot_map, count=6):
+    """
+    Remappt eine Metadatenliste (z. B. filament used [g], density), 
+    ohne nicht gemappte Werte zu verlieren.
+    Gibt neue Liste zurück mit den remappten Werten.
+    """
+    print("\n[remap_metadata_list] Start")
+    print(f"Original-Liste: {meta_list}")
+    print(f"Mapping: {slot_map}")
+
+    # Wenn kein Mapping aktiv, Original zurückgeben
+    if not slot_map:
+        print("ℹ️ Kein Mapping aktiv – Originalliste wird unverändert zurückgegeben.")
+        return meta_list[:]
+
+    # 🆕 Starte mit Kopie der Originalwerte (alle Slots belegt mit Original)
+    remapped = meta_list[:] + [0.0] * (count - len(meta_list))
+    print(f"[Init] Kopierte Ausgangsliste (ggf. mit 0.0 aufgefüllt): {remapped}")
+
+    # Verfolge, welche Zielslots bereits durch ein Mapping belegt wurden
+    assigned = {}
+
+    for orig_index, value in enumerate(meta_list):
+        if orig_index not in slot_map:
+            continue
+
+        target_index = slot_map[orig_index]
+
+        if target_index in assigned and assigned[target_index] != orig_index:
+            print(f"⚠️ Konflikt: Slot {target_index} bereits durch Index {assigned[target_index]} belegt – {orig_index} wird ignoriert")
+            continue
+
+        remapped[target_index] = value
+        assigned[target_index] = orig_index
+        print(f"🔁 Index {orig_index} → Slot {target_index} mit Wert {value}")
+
+        # 🧼 Optional: Originalplatz auf 0.0 setzen, wenn Ziel ≠ Quelle
+        if target_index != orig_index:
+            remapped[orig_index] = 0.0
+            print(f"    🧽 Setze ursprünglichen Index {orig_index} auf 0.0 (wurde verschoben)")
+
+    print(f"➡️ Remapped-Liste: {remapped}")
+    return remapped
+    
+def apply_slot_override(usage_dict):
+    """
+    Gibt eine remappte Kopie von usage_dict zurück basierend auf temporary_slot_map.
+    Werte werden ersetzt, nicht addiert. Nicht gemappte Werte bleiben erhalten.
+    """
+    print("\n[apply_slot_override] Start")
+    print(f"Original usage_dict: {usage_dict}")
+    print(f"Aktives Mapping: {temporary_slot_map}")
+
+    if not temporary_slot_map:
+        print("ℹ️ Kein Mapping aktiv – Original usage_dict wird zurückgegeben")
+        return usage_dict.copy()
+
+    remapped = usage_dict.copy()
+    assigned = {}
+
+    for orig_tool, value in usage_dict.items():
+        if orig_tool not in temporary_slot_map:
+            continue
+
+        new_tool = temporary_slot_map[orig_tool]
+
+        if new_tool in assigned and assigned[new_tool] != orig_tool:
+            print(f"⚠️ Konflikt: Ziel-Slot {new_tool} wurde bereits durch Tool {assigned[new_tool]} gemappt – Tool {orig_tool} wird ignoriert")
+            continue
+
+        remapped[new_tool] = value
+        assigned[new_tool] = orig_tool
+        print(f"🔁 Tool {orig_tool} → {new_tool} mit Wert {value}")
+
+        # 🧼 Original-Eintrag entfernen, wenn Ziel ≠ Quelle
+        if new_tool != orig_tool:
+            del remapped[orig_tool]
+            print(f"    🧽 Entferne Original-Slot {orig_tool}")
+
+    print(f"➡️ Remapped usage_dict: {remapped}")
+    return remapped
+    
 def main():
     global usage_history
     init_spools()
@@ -477,7 +590,7 @@ def main():
         # Aufruf des Generators live_analyze:
         # live_analyze yieldet fortlaufend (progress, usage_dict).
         usage_history = []  # runtime data populated by monitor
-        
+        remapped_history = []
         if settings.tool_live in ('file', 'blocked') or not dl:
           doSync = False
           settings.noti = "no sync"
@@ -489,6 +602,7 @@ def main():
             # Hier wird der Generator konsumiert!
             # Zwischenstände landen in usage_history via yield und Flask-/Data-Endpoint.
             usage_history.append((progress, usage))
+            
             #print(f"Generator liefert: {progress:.1f}% - {usage}. State {settings.tool_state}")
 
           # Externen Abbruch erkennen:
@@ -503,6 +617,10 @@ def main():
                 break
         if settings.noti=="Analyse Offline" or settings.noti=="Analyse Online": settings.noti=""
         print("LIVE END")
+        remapped_history = [(progress, apply_slot_override(usage)) for progress, usage in usage_history]
+        remapped_usage = apply_slot_override(usage)
+        usage_history = remapped_history
+        usage = remapped_usage
         print("\nDruck beendet. Vergleich:")
         try:
             if settings.tool_mmu:
@@ -541,7 +659,6 @@ def main():
           time.sleep(25)
         settings.noti = ""
         print(f"[main {datetime.now().strftime('%H:%M:%S')} ] Resume Monitoring. Old Job: {old_job_progressed}. New Job: {settings.tool_job}")
-        
 
     # Cleanup
     stop_event.set()
