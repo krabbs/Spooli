@@ -3,4 +3,4 @@ __pycache__/
 *.log
 .env
 *.sqlite
-data/
+data/*.json
